@@ -1,0 +1,3 @@
+@echo off
+echo Iniciando a aplicacao Streamlit...
+streamlit run unificado.py --server.port 8502 --server.address 0.0.0.0
