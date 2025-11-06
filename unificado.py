@@ -56,7 +56,7 @@ def validar_formato_atributos(df):
     
     return colunas_problematicas
 
-def converter_para_json(df, progress_bar=None):
+def converter_para_json(df, progress_bar=None, cpf_cnpj_raiz_selecionado=None):
     """Converte um DataFrame em uma lista de dicionários no formato JSON desejado de forma dinâmica."""
     dados_convertidos = []
     seq = 1
@@ -93,7 +93,7 @@ def converter_para_json(df, progress_bar=None):
             "seq": seq,
             "descricao": row.get("Descricao", ""),
             "denominacao": row.get("Denominacao", ""),
-            "cpfCnpjRaiz": "39318225",
+            "cpfCnpjRaiz": cpf_cnpj_raiz_selecionado if cpf_cnpj_raiz_selecionado else "39318225", # Usa o valor selecionado ou o padrão
             "situacao": "Ativado",
             "modalidade": "IMPORTACAO",
             "ncm": str(row.get("NCM", "")),
@@ -382,12 +382,76 @@ def get_all_items():
     df.rename(columns={'part_number': 'Part Number', 'atributos_usados': 'Atributos Usados'}, inplace=True)
     return df
 
+def create_table_cnpj_options():
+    """Cria a tabela cnpj_options se ela não existir."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cnpj_options (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            cpf_cnpj_raiz TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def insert_cnpj_option(name, cpf_cnpj_raiz):
+    """Insere uma nova opção de CNPJ/CPF Raiz na tabela cnpj_options."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO cnpj_options (name, cpf_cnpj_raiz) VALUES (?, ?)", (name, cpf_cnpj_raiz))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        st.error(f"Erro: Já existe uma opção com o nome '{name}'.")
+        return False
+    finally:
+        conn.close()
+
+def get_cnpj_options():
+    """Recupera todas as opções de CNPJ/CPF Raiz da tabela cnpj_options."""
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT name, cpf_cnpj_raiz FROM cnpj_options ORDER BY name", conn)
+    conn.close()
+    return df
+
+def update_cnpj_option(option_id, new_name, new_cpf_cnpj_raiz):
+    """Atualiza uma opção de CNPJ/CPF Raiz existente na tabela cnpj_options."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE cnpj_options SET name = ?, cpf_cnpj_raiz = ? WHERE id = ?", (new_name, new_cpf_cnpj_raiz, option_id))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        st.error(f"Erro: Já existe uma opção com o nome '{new_name}'.")
+        return False
+    finally:
+        conn.close()
+
+def delete_cnpj_option(option_id):
+    """Deleta uma opção de CNPJ/CPF Raiz da tabela cnpj_options."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM cnpj_options WHERE id = ?", (option_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao deletar a opção: {e}")
+        return False
+    finally:
+        conn.close()
+
 # --- Lógica Principal da Aplicação Streamlit ---
 
 # Garante que as tabelas do banco de dados existam
 create_table_ncm_x_atrib_x_pn()
 create_table_cod_atributos()
 create_table_ncm_x_atrib()
+create_table_cnpj_options()
 
 # Inicializa o estado da sessão para armazenar os JSONs gerados
 if 'generated_jsons' not in st.session_state:
@@ -396,14 +460,34 @@ if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
 if 'expand_all' not in st.session_state:
     st.session_state.expand_all = False
+if 'selected_cpf_cnpj_raiz' not in st.session_state:
+    st.session_state.selected_cpf_cnpj_raiz = None
 
 # Cria as abas na parte superior
-tab1, tab2, tab3, tab4 = st.tabs(["Processamento de Planilhas", "Gerenciamento do Banco de Dados", "Análises e Estatísticas", "Consulta de Atributos"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Processamento de Planilhas", "Gerenciamento do Banco de Dados", "Análises e Estatísticas", "Consulta de Atributos", "Configuração de CNPJ/CPF Raiz"])
 
 # Conteúdo da Aba 1: Processamento de Planilhas
 with tab1:
     st.title("Conversor e Atualizador de Base de Dados de Peças")
     st.markdown("Envie uma ou mais planilhas Excel para converter em JSON e atualizar a base de dados.")
+
+    # Seletor de CPF/CNPJ Raiz
+    cnpj_options_df = get_cnpj_options()
+    if not cnpj_options_df.empty:
+        options = cnpj_options_df['name'].tolist()
+        selected_name = st.selectbox(
+            "Selecione o CPF/CNPJ Raiz para gerar o JSON:",
+            options,
+            key="cnpj_selector"
+        )
+        if selected_name:
+            st.session_state.selected_cpf_cnpj_raiz = cnpj_options_df[cnpj_options_df['name'] == selected_name]['cpf_cnpj_raiz'].iloc[0]
+            st.info(f"CPF/CNPJ Raiz selecionado: **{st.session_state.selected_cpf_cnpj_raiz}**")
+    else:
+        st.warning("Nenhuma opção de CPF/CNPJ Raiz cadastrada. Por favor, cadastre uma na aba 'Configuração de CNPJ/CPF Raiz'.")
+        st.session_state.selected_cpf_cnpj_raiz = None # Garante que não há valor selecionado se a tabela estiver vazia
+
+    st.markdown("---") # Separador visual
 
     uploaded_files = st.file_uploader(
         "Envie suas planilhas Excel",
@@ -470,7 +554,13 @@ with tab1:
                     json_progress_bar = st.progress(0)
                     json_progress_text.text("Convertendo para JSON...")
                     df = normalizar_colunas(df_original.copy())
-                    json_convertido = converter_para_json(df, json_progress_bar)
+                    
+                    if st.session_state.selected_cpf_cnpj_raiz:
+                        json_convertido = converter_para_json(df, json_progress_bar, st.session_state.selected_cpf_cnpj_raiz)
+                    else:
+                        st.error("Por favor, selecione um CPF/CNPJ Raiz antes de processar a planilha.")
+                        continue # Pula para o próximo arquivo ou encerra o processamento
+                    
                     json_progress_text.empty() # Remove o texto de progresso
                     json_progress_bar.empty() # Remove a barra de progresso
                     st.success("Conversão JSON concluída!")
@@ -582,6 +672,7 @@ with tab1:
         )
         
 # Conteúdo da Aba 2: Gerenciamento do Banco de Dados
+# Início do conteúdo da Aba 2
 with tab2:
     st.title("Gerenciamento do Banco de Dados")
     st.markdown("Use esta seção para inspecionar tabelas existentes, executar comandos SQL ou criar novas tabelas diretamente no banco de dados `bytebook.db`.")
@@ -851,3 +942,77 @@ with tab4:
                 st.error(f"Ocorreu um erro na busca: {e}")
             finally:
                 conn.close()
+
+# Conteúdo da Aba 5: Configuração de CNPJ/CPF Raiz
+with tab5:
+    st.title("Configuração de CNPJ/CPF Raiz")
+    st.markdown("Cadastre e gerencie as opções de CPF/CNPJ Raiz disponíveis para a geração de JSONs.")
+
+    st.subheader("Cadastrar Nova Opção")
+    with st.form("form_add_cnpj_option"):
+        new_name = st.text_input("Nome da Opção (ex: Crawl, Kia)")
+        new_cpf_cnpj_raiz = st.text_input("CPF/CNPJ Raiz")
+        submitted = st.form_submit_button("Adicionar Opção")
+
+        if submitted:
+            if new_name and new_cpf_cnpj_raiz:
+                if insert_cnpj_option(new_name, new_cpf_cnpj_raiz):
+                    st.success(f"Opção '{new_name}' com CPF/CNPJ Raiz '{new_cpf_cnpj_raiz}' adicionada com sucesso!")
+                else:
+                    st.error("Falha ao adicionar a opção. Verifique se o nome já existe.")
+            else:
+                st.warning("Por favor, preencha todos os campos.")
+    
+    st.markdown("---")
+    st.subheader("Opções de CPF/CNPJ Raiz Cadastradas")
+    
+    current_cnpj_options_df = get_cnpj_options()
+    if not current_cnpj_options_df.empty:
+        # Adiciona uma coluna de índice para seleção
+        current_cnpj_options_df_with_id = current_cnpj_options_df.reset_index(drop=True)
+        current_cnpj_options_df_with_id['id'] = current_cnpj_options_df_with_id.index + 1 # IDs para seleção
+        
+        st.dataframe(current_cnpj_options_df_with_id[['id', 'name', 'cpf_cnpj_raiz']], hide_index=True)
+
+        st.markdown("---")
+        st.subheader("Editar ou Deletar Opção")
+
+        # Seletor para escolher a opção a ser editada/deletada
+        options_for_selection = current_cnpj_options_df_with_id.apply(lambda row: f"{row['id']} - {row['name']} ({row['cpf_cnpj_raiz']})", axis=1).tolist()
+        selected_option_str = st.selectbox("Selecione uma opção para editar ou deletar:", options_for_selection, key="edit_delete_selector")
+
+        if selected_option_str:
+            selected_id = int(selected_option_str.split(' - ')[0])
+            selected_option_data = current_cnpj_options_df_with_id[current_cnpj_options_df_with_id['id'] == selected_id].iloc[0]
+            
+            # Formulário de Edição
+            with st.form("form_edit_cnpj_option"):
+                st.markdown(f"**Editando: {selected_option_data['name']}**")
+                edited_name = st.text_input("Novo Nome da Opção", value=selected_option_data['name'], key="edit_name")
+                edited_cpf_cnpj_raiz = st.text_input("Novo CPF/CNPJ Raiz", value=selected_option_data['cpf_cnpj_raiz'], key="edit_cpf_cnpj_raiz")
+                
+                col_edit_btn, col_delete_btn = st.columns(2)
+                with col_edit_btn:
+                    if st.form_submit_button("Salvar Edição"):
+                        if edited_name and edited_cpf_cnpj_raiz:
+                            # O ID real da opção é o 'id' da tabela, não o 'id' gerado para seleção
+                            real_option_id = current_cnpj_options_df[current_cnpj_options_df['name'] == selected_option_data['name']].index[0] + 1 # Assuming 1-based index for sqlite
+                            if update_cnpj_option(real_option_id, edited_name, edited_cpf_cnpj_raiz):
+                                st.success(f"Opção '{edited_name}' atualizada com sucesso!")
+                                st.rerun()
+                            else:
+                                st.error("Falha ao atualizar a opção. Verifique se o nome já existe.")
+                        else:
+                            st.warning("Por favor, preencha todos os campos para edição.")
+                
+                with col_delete_btn:
+                    if st.form_submit_button("Deletar Opção"):
+                        # O ID real da opção é o 'id' da tabela, não o 'id' gerado para seleção
+                        real_option_id = current_cnpj_options_df[current_cnpj_options_df['name'] == selected_option_data['name']].index[0] + 1 # Assuming 1-based index for sqlite
+                        if delete_cnpj_option(real_option_id):
+                            st.success(f"Opção '{selected_option_data['name']}' deletada com sucesso!")
+                            st.rerun()
+                        else:
+                            st.error("Falha ao deletar a opção.")
+    else:
+        st.info("Nenhuma opção de CPF/CNPJ Raiz cadastrada ainda.")
