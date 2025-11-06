@@ -523,87 +523,94 @@ with tab1:
             with st.expander(f"Processando arquivo: {uploaded_file.name}", expanded=st.session_state.expand_all):
                 with st.spinner("Analisando e processando..."):
                     # Leitura e pré-processamento
+                    # Leitura e pré-processamento
                     if uploaded_file.name.endswith('.csv'):
-                        df_original = pd.read_csv(uploaded_file)
+                        # Para CSV, ainda tratamos como uma única "aba"
+                        dfs = {uploaded_file.name.rsplit('.', 1)[0]: pd.read_csv(uploaded_file)}
                     else:
-                        df_original = pd.read_excel(uploaded_file, engine="openpyxl")
-                    df_original = df_original.dropna(how='all')
-
-                    # Validação de formato de colunas
-                    colunas_erradas = validar_formato_atributos(df_original)
-                    if colunas_erradas:
-                        st.error(f"Erro de Formato no Arquivo: '{uploaded_file.name}'")
-                        st.warning("As seguintes colunas parecem ser atributos, mas estão com formato incorreto (o correto é 'ATT_...'):")
-                        st.code(', '.join(colunas_erradas))
-                        continue
-
-                    st.dataframe(df_original.head(3), hide_index=True)
-                    df_original = df_original.applymap(lambda x: x.strip() if isinstance(x, str) else x)
-
-                    col_part_number = encontrar_coluna(df_original, "PART_NUMBER")
-                    if not col_part_number:
-                        st.error("A coluna 'PART_NUMBER' é obrigatória e não foi encontrada.")
-                        continue
+                        # Para Excel, lemos todas as abas
+                        dfs = pd.read_excel(uploaded_file, sheet_name=None, engine="openpyxl")
                     
-                    if df_original.duplicated(subset=[col_part_number]).any():
-                        st.warning("Part Numbers duplicados encontrados. Apenas a primeira ocorrência será processada.")
-                    df_original.drop_duplicates(subset=[col_part_number], keep='first', inplace=True)
+                    for sheet_name, df_original in dfs.items():
+                        st.subheader(f"Processando aba: **{sheet_name}**")
+                        df_original = df_original.dropna(how='all')
 
-                    # Normalização e conversão
-                    json_progress_text = st.empty()
-                    json_progress_bar = st.progress(0)
-                    json_progress_text.text("Convertendo para JSON...")
-                    df = normalizar_colunas(df_original.copy())
-                    
-                    if st.session_state.selected_cpf_cnpj_raiz:
-                        json_convertido = converter_para_json(df, json_progress_bar, st.session_state.selected_cpf_cnpj_raiz)
-                    else:
-                        st.error("Por favor, selecione um CPF/CNPJ Raiz antes de processar a planilha.")
-                        continue # Pula para o próximo arquivo ou encerra o processamento
-                    
-                    json_progress_text.empty() # Remove o texto de progresso
-                    json_progress_bar.empty() # Remove a barra de progresso
-                    st.success("Conversão JSON concluída!")
-                    
-                    is_valid, message = validar_json_vs_df(json_convertido, df)
-                    if not is_valid:
-                        st.error(f"Falha na validação: {message}")
-                        continue
-                    else:
-                        st.success(message)
+                        # Validação de formato de colunas
+                        colunas_erradas = validar_formato_atributos(df_original)
+                        if colunas_erradas:
+                            st.error(f"Erro de Formato na Aba '{sheet_name}' do Arquivo: '{uploaded_file.name}'")
+                            st.warning("As seguintes colunas parecem ser atributos, mas estão com formato incorreto (o correto é 'ATT_...'):")
+                            st.code(', '.join(colunas_erradas))
+                            continue
 
-                    # Armazena o JSON gerado no estado da sessão
-                    nome_base = uploaded_file.name.rsplit('.', 1)[0]
-                    st.session_state.generated_jsons[nome_base] = json_convertido
+                        st.dataframe(df_original.head(3), hide_index=True)
+                        df_original = df_original.applymap(lambda x: x.strip() if isinstance(x, str) else x)
 
-                    # Inserção no banco de dados
-                    df_novos_itens = criar_df_pecas(json_convertido)
-                    num_novos_itens = insert_new_items(df_novos_itens)
-                    
-                    df_atributos_para_inserir = get_atributos_from_df(df_original)
-                    num_novos_atributos = insert_data_from_df(df_atributos_para_inserir, 'COD_ATRIBUTOS')
-                    
-                    df_ncm_x_atrib = converter_para_df_ncm_x_atrib(df_original)
-                    num_ncm_atrib_novos = insert_data_from_df(df_ncm_x_atrib, 'NCM_X_ATRIB')
+                        col_part_number = encontrar_coluna(df_original, "PART_NUMBER")
+                        if not col_part_number:
+                            st.error(f"A coluna 'PART_NUMBER' é obrigatória e não foi encontrada na aba '{sheet_name}'.")
+                            continue
+                        
+                        if df_original.duplicated(subset=[col_part_number]).any():
+                            st.warning(f"Part Numbers duplicados encontrados na aba '{sheet_name}'. Apenas a primeira ocorrência será processada.")
+                        df_original.drop_duplicates(subset=[col_part_number], keep='first', inplace=True)
 
-                    # Exibição de Resultados
-                    st.markdown("---")
-                    st.subheader("Resultados da Atualização do Banco de Dados")
-                    
-                    if num_novos_itens > 0:
-                        st.success(f"**Peças:** {num_novos_itens} novos itens adicionados.")
-                    else:
-                        st.info("**Peças:** Base de dados já estava atualizada.")
+                        # Normalização e conversão
+                        json_progress_text = st.empty()
+                        json_progress_bar = st.progress(0)
+                        json_progress_text.text(f"Convertendo aba '{sheet_name}' para JSON...")
+                        df = normalizar_colunas(df_original.copy())
+                        
+                        if st.session_state.selected_cpf_cnpj_raiz:
+                            json_convertido = converter_para_json(df, json_progress_bar, st.session_state.selected_cpf_cnpj_raiz)
+                        else:
+                            st.error("Por favor, selecione um CPF/CNPJ Raiz antes de processar a planilha.")
+                            continue # Pula para o próximo arquivo ou encerra o processamento
+                        
+                        json_progress_text.empty() # Remove o texto de progresso
+                        json_progress_bar.empty() # Remove a barra de progresso
+                        st.success(f"Conversão JSON da aba '{sheet_name}' concluída!")
+                        
+                        is_valid, message = validar_json_vs_df(json_convertido, df)
+                        if not is_valid:
+                            st.error(f"Falha na validação da aba '{sheet_name}': {message}")
+                            continue
+                        else:
+                            st.success(f"Validação da aba '{sheet_name}' bem-sucedida: {message}")
 
-                    if num_novos_atributos > 0:
-                        st.success(f"**Atributos:** {num_novos_atributos} novos códigos de atributos adicionados.")
-                    else:
-                        st.info("**Atributos:** Tabela de códigos de atributos já estava atualizada.")
+                        # Armazena o JSON gerado no estado da sessão
+                        nome_base_arquivo = uploaded_file.name.rsplit('.', 1)[0]
+                        st.session_state.generated_jsons[f"{nome_base_arquivo}_{sheet_name}"] = json_convertido
 
-                    if num_ncm_atrib_novos > 0:
-                        st.success(f"**NCM x Atributo:** {num_ncm_atrib_novos} novas combinações adicionadas.")
-                    else:
-                        st.info("**NCM x Atributo:** Tabela de combinações já estava atualizada.")
+                        # Inserção no banco de dados
+                        df_novos_itens = criar_df_pecas(json_convertido)
+                        num_novos_itens = insert_new_items(df_novos_itens)
+                        
+                        df_atributos_para_inserir = get_atributos_from_df(df_original)
+                        num_novos_atributos = insert_data_from_df(df_atributos_para_inserir, 'COD_ATRIBUTOS')
+                        
+                        df_ncm_x_atrib = converter_para_df_ncm_x_atrib(df_original)
+                        num_ncm_atrib_novos = insert_data_from_df(df_ncm_x_atrib, 'NCM_X_ATRIB')
+
+                        # Exibição de Resultados
+                        st.markdown("---")
+                        st.subheader(f"Resultados da Atualização do Banco de Dados para a aba '{sheet_name}'")
+                        
+                        if num_novos_itens > 0:
+                            st.success(f"**Peças:** {num_novos_itens} novos itens adicionados da aba '{sheet_name}'.")
+                        else:
+                            st.info(f"**Peças:** Base de dados já estava atualizada para a aba '{sheet_name}'.")
+
+                        if num_novos_atributos > 0:
+                            st.success(f"**Atributos:** {num_novos_atributos} novos códigos de atributos adicionados da aba '{sheet_name}'.")
+                        else:
+                            st.info(f"**Atributos:** Tabela de códigos de atributos já estava atualizada para a aba '{sheet_name}'.")
+
+                        if num_ncm_atrib_novos > 0:
+                            st.success(f"**NCM x Atributo:** {num_ncm_atrib_novos} novas combinações adicionadas da aba '{sheet_name}'.")
+                        else:
+                            st.info(f"**NCM x Atributo:** Tabela de combinações já estava atualizada para a aba '{sheet_name}'.")
+                        st.markdown("---") # Separador entre abas
 
         # --- Seção de Download dos JSONs ---
         if st.session_state.generated_jsons:
